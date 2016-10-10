@@ -19,18 +19,21 @@ char Phone3[] =  "09157047148";
 #define FONA_RX 2
 #define FONA_TX 10
 #define FONA_RST 4
+const unsigned int SENSORPIN = 52;
 
-const unsigned int buzzpin = 9; //Pin For Buzzer
-const unsigned int PIN_DETECT = 11; // IR pin
+int sensorState = 0;
+
+const unsigned int buzzpin = 6; //Pin For Buzzer
 const unsigned int RF_rcPin = 12; // RF recieve PIN
 const unsigned int relayPin = 5;
 
 unsigned int SendCounter = 0;
 unsigned int ShutOffCounter = 0;
-unsigned int ShutOffTimer = 10;
+unsigned int ShutOffTimer = 5;
 
 bool crashed = false;
 bool drunk = false;
+bool wearing_helmet = false;
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 SoftwareSerial fonaSS = SoftwareSerial(FONA_TX, FONA_RX);
@@ -38,10 +41,14 @@ SoftwareSerial *fonaSerial = &fonaSS;
 Adafruit_FONA fona = Adafruit_FONA(FONA_RST);
 uint8_t readline(char *buff, uint8_t maxbuff, uint16_t timeout = 0);
 
+unsigned long previousMillis = 0;
 void setup() {
-  pinMode(PIN_DETECT, INPUT);
+  pinMode(SENSORPIN, INPUT);
+  digitalWrite(SENSORPIN, HIGH); // turn on the pullup
   pinMode(relayPin, OUTPUT);
-  digitalWrite(relayPin, LOW);
+  pinMode(buzzpin, OUTPUT);
+  digitalWrite(relayPin, HIGH);
+  digitalWrite(buzzpin, HIGH);
 
   Serial.begin(115200);
   Serial.println(F("Motor cycle starting"));
@@ -71,7 +78,7 @@ void setup() {
   buzz(200); //Beep
   LCD_MSG("  Connecting... ", "              ");
   RF_recieve();
-  delay(2000);
+  delay(1000);
   if (drunk) {
     digitalWrite(relayPin, LOW);
   }
@@ -79,35 +86,39 @@ void setup() {
 }
 
 void loop() {
-  Serial.println(F("Looping"));
+ // Serial.println(F("Looping"));
   RF_recieve();
-  IR_Connect();
 
-  if (drunk) {
-    Serial.println(F("Looping drunk"));
-    ShutOffCounter++;
-    if (ShutOffTimer <= 0) {
-      LCD_MSG(" Shutting down! ", "");
-      buzz(200);
-      delay(3000);
-      digitalWrite(relayPin, LOW);
-    } else if (ShutOffCounter > 30) {
-      ShutOffTimer--;
-      LCD_MSG("Motorcycle Will", "Shut-Off in " + String(ShutOffTimer));
-      buzz(200);
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= 1000) {
+    IR_Connect();
+    if (drunk) {
+      Serial.println(F("Looping drunk"));
+      ShutOffCounter++;
+      if (ShutOffTimer <= 0) {
+        LCD_MSG(" Shutting down! ", "");
+        buzz(200);
+        delay(1000);
+        digitalWrite(relayPin, HIGH);
+      } else if (ShutOffCounter > 30) {
+        ShutOffTimer--;
+        LCD_MSG("Motorcycle Will", "Shut-Off in " + String(ShutOffTimer));
+        buzz(200);
+      }
     }
-  }
 
-  if (crashed) {
-    Serial.println(F("Looping crash"));
-    LCD_MSG("Press Helmet", "Button to cancel");
-    SendCounter++;
-    buzz(200);
-    if (SendCounter > 30) {
-      LCD_MSG("Sending Message", "");
-      SendSMS();
-      SendCounter = 0;
+    if (crashed) {
+      Serial.println(F("Looping crash"));
+      LCD_MSG("Press Helmet", "Button to cancel");
+      SendCounter++;
+      buzz(200);
+      if (SendCounter > 30) {
+        LCD_MSG("Sending Message", "");
+        SendSMS();
+        SendCounter = 0;
+      }
     }
+    previousMillis = currentMillis;
   }
 }
 
@@ -120,31 +131,45 @@ String RF_recieve() {
   uint8_t buf[VW_MAX_MESSAGE_LEN];
   uint8_t buflen = VW_MAX_MESSAGE_LEN;
   if (vw_get_message(buf, &buflen)) {
-    Serial.println(F("RF_recieve has message"));
-    if (buf[0] == 'C') {
+    Serial.println(F(" has message"));
+     Serial.println(buf[0]);
+//     String data = buf[0];
+    LCD_MSG("   RF_recieve  ", "    message!   ");
+    if (buf[0] == 67) {
       crashed = true;
       LCD_MSG("   Helmet Bump  ", "    Detected!   ");
       buzz(1000);
+      Serial.println(F("crash"));
       return "Crash";
-    } else if (buf[0] == 'A') {
+    } else if (buf[0] == 65) {
       drunk = true;
       buzz(1000);
       LCD_MSG("Drunk Driver", "    Detected!   ");
+      Serial.println(F("Drunk has message"));
       return "Drunk";
-    } else if (buf[0] == 'B') {
+    } else if (buf[0] == 66) {
       crashed = false;
       SendCounter = 0;
       buzz(1000);
       LCD_MSG("  Cancel Button ", "    Pressed!   ");
+      Serial.println(F("Cancel button has message"));
       return "OFFBTN";
-    } else if (buf[0] == 'L') {
-      LCD_MSG("LOW BATTERY!", "Please Re-charge");
+    } else if (buf[0] == 80) {
+      wearing_helmet = true;
+      Serial.println(F("wear helmet"));
+      buzz(1000);
+      return "Lowbat";
+    } else if (buf[0] == 78) {
+      wearing_helmet = false;
+      Serial.println(F("not wear helmet"));
+      LCD_MSG("Please Wear", "Your Helmet");
       buzz(1000);
       return "Lowbat";
     } else {
       return "OK";
     }
   }
+
   return "OFF";
 }
 
@@ -158,16 +183,20 @@ String RF_recieve() {
 //Infrared blocking detection
 ////////////////////////////////////////////////////////////////////
 void IR_Connect() {
-  if (!digitalRead(PIN_DETECT)) {
+  sensorState = digitalRead(SENSORPIN);
+  if (sensorState == LOW ) {
     Serial.println(F("IR_Connect cannot detect helmet"));
     ShutOffCounter++;
     LCD_MSG("No Helmet", String(ShutOffCounter)); // debug
     if (ShutOffTimer <= 0) {
       LCD_MSG(" Shutting down! ", "");
       buzz(200);
-      delay(3000);
-      digitalWrite(relayPin, LOW);
-    } else if (ShutOffCounter > 20) {
+      delay(1000);
+      digitalWrite(relayPin, HIGH);
+      while (1) {
+        LCD_MSG("................", "................");
+      }
+    } else if (ShutOffCounter > 15) {
       ShutOffTimer--;
       LCD_MSG("Motorcycle Will", "Shut-Off in " + String(ShutOffTimer));
       buzz(200);
@@ -175,15 +204,16 @@ void IR_Connect() {
       LCD_MSG("    Please!!!   ", "Wear your helmet");
       buzz(200);
     } else {
-      LCD_MSG("No Helmet", "Nothing happen"); //debug
+      // LCD_MSG("No Helmet", "Nothing happen"); //debug
     }
   } else {
-    Serial.println(F("IR_Connect detect helmet"));
+  //  Serial.println(F("IR_Connect detect helmet"));
     if (!drunk) {
-      digitalWrite(relayPin, HIGH);
+      digitalWrite(relayPin, LOW);
       ShutOffCounter = 0;
-      ShutOffTimer = 10;
+      ShutOffTimer = 5;
       LCD_MSG("NOT Drunk", "Very Good"); // debug
+
     }
   }
 }
@@ -256,10 +286,10 @@ void SendSMS() {
 //parameter: Length of Beeping sound
 ////////////////////////////////////////////////////////////////////
 void buzz(unsigned char time) {
-  analogWrite(buzzpin, 170);
-  delay(time);
-  analogWrite(buzzpin, 0);
-  delay(time);
+  digitalWrite(buzzpin, LOW);
+  delay(400);
+  digitalWrite(buzzpin, HIGH);
+  delay(400);
 }
 
 
